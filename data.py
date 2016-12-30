@@ -14,7 +14,7 @@ __author__ = 'buriburisuri@gmail.com'
 
 class VCTK(object):
 
-    def __init__(self, batch_size=16, data_path='asset/data/'):
+    def __init__(self, batch_size=16, data_path='asset/data/', mode='train'):
 
         @tf.sg_producer_func
         def _load_mfcc(src_list):
@@ -24,15 +24,26 @@ class VCTK(object):
             # load wave file
             wav, sr = librosa.load(wav, mono=True)
             # mfcc
-            mfcc = librosa.feature.mfcc(wav, sr)
+            hl = 512
+            mfcc = librosa.feature.mfcc(wav, sr, n_mfcc=40,hop_length=hl)
+            mfcc = mfcc[:,:100]
             # return result
             return lab, mfcc
 
+        print("Mode: %s" % mode)
+
         # load corpus
-        labels, wave_files = self._load_corpus(data_path)
+        labels, wave_files, accent_labels = self._load_corpus(data_path, mode=='train')
+        labels = accent_labels
+        labels = np.array(labels)
+
+        self.labels = labels
+        self.wave_files = wave_files
 
         # to constant tensor
         label = tf.convert_to_tensor(labels)
+        #label = tf.convert_to_tensor(accent_labels)
+
         wave_file = tf.convert_to_tensor(wave_files)
 
         # create queue from constant tensor
@@ -44,7 +55,7 @@ class VCTK(object):
 
         # create batch queue with dynamic pad
         batch_queue = tf.train.batch([label, mfcc], batch_size,
-                                     shapes=[(None,), (20, None)],
+                                     shapes=[(None,), (40, None)],
                                      num_threads=32, capacity=batch_size*48,
                                      dynamic_pad=True)
 
@@ -59,7 +70,7 @@ class VCTK(object):
         # print info
         tf.sg_info('VCTK corpus loaded.(total data=%d, total batch=%d)' % (len(labels), self.num_batch))
 
-    def _load_corpus(self, data_path):
+    def _load_corpus(self, data_path, _mode):
 
         # read meta-info
         df = pd.read_table(data_path + 'speaker-info.txt', usecols=['ID', 'AGE', 'GENDER', 'ACCENTS'],
@@ -74,11 +85,21 @@ class VCTK(object):
         wav_files = [data_path + 'wav48/%s/' % f[:4] + f + '.wav' for f in file_ids]
 
         # exclude extremely short wave files
-        file_id, wav_file = [], []
+        file_id, wav_file, accent_labels = [], [], []
         for i, w in zip(file_ids, wav_files):
-            if os.stat(w).st_size > 240000:  # at least 5 seconds
+            f_id = int(i[1:i.index('_')])
+            idx = np.where(df.ID.values==f_id)[0][0]
+            accent = df.ACCENTS.values[idx]
+            if (f_id % 5 != 0) != _mode:
+                continue
+            if os.stat(w).st_size > 240000 and (accent=='American' or accent=='English'):  # at least 5 seconds
                 file_id.append(i)
                 wav_file.append(w)
+                if accent == 'American':
+                    a_lbl = np.array([1, 0])
+                else:
+                    a_lbl = np.array([0, 1])
+                accent_labels.append(a_lbl)
 
         # read label sentence
         sents = []
@@ -103,7 +124,7 @@ class VCTK(object):
             # save as string for variable-length support.
             label.append(np.asarray([self.byte2index[ch] for ch in s]).tostring())
 
-        return label, wav_file
+        return label, wav_file, accent_labels
 
     def print_index(self, indices):
         # transform label index to character
